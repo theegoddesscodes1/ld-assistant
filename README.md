@@ -185,3 +185,4 @@ nothing else needs touching. The research topics it searches for each week live 
   API keys, neither of which exist until you deploy it. The code follows the standard,
   documented patterns for each piece, but budget some time for troubleshooting on
   first deploy.
+# ld-assistant
