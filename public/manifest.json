@@ -1,0 +1,12 @@
+{
+  "name": "Lilac Desk Command Center",
+  "short_name": "Command Center",
+  "description": "Personal business + fitness assistant for Lilac Desk.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FAFAF8",
+  "theme_color": "#5C181E",
+  "icons": [
+    { "src": "/icon.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
