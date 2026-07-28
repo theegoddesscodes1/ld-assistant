@@ -2,6 +2,8 @@ import { kv } from "@vercel/kv";
 import webpush from "web-push";
 import { NextResponse } from "next/server";
 import { RHYTHM, WORKOUT } from "../../../../lib/schedule";
+import { normalizeFiverrStatus, FIVERR_NEXT_STEP } from "../../../../lib/fiverrStatus";
+import { getSalesSummary } from "../../../../lib/shopify";
 
 export const dynamic = "force-dynamic";
 
@@ -17,9 +19,24 @@ function hourInTz() {
   return Number(h.value);
 }
 
+async function activeFiverrLine() {
+  try {
+    const clients = (await kv.get("fiverrClients")) || [];
+    const active = clients
+      .map((c) => ({ ...c, status: normalizeFiverrStatus(c.status) }))
+      .filter((c) => c.status !== "Approved")
+      .sort((a, b) => (a.deadline || "9999").localeCompare(b.deadline || "9999"));
+    if (!active.length) return null;
+    const top = active[0];
+    const step = FIVERR_NEXT_STEP[top.status] || "";
+    return `Fiverr: ${top.client} — ${top.status}.${step ? ` ${step}` : ""}`;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function buildMorning() {
   const dayIndex = new Date().getDay();
-  const today = new Date().toISOString().slice(0, 10);
   const bits = [];
 
   bits.push(`Focus: ${RHYTHM[dayIndex].focus}.`);
@@ -31,21 +48,17 @@ async function buildMorning() {
     bits.push(`Workout: ${workout.focus}.`);
   }
 
-  // Active Fiverr deadlines
   try {
-    const clients = (await kv.get("fiverrClients")) || [];
-    const active = clients
-      .filter((c) => c.status !== "Delivered")
-      .sort((a, b) => (a.deadline || "9999").localeCompare(b.deadline || "9999"));
-    const dueToday = active.filter((c) => c.deadline === today);
-    if (dueToday.length) {
-      bits.push(`Due today: ${dueToday.map((c) => c.client).join(", ")}.`);
-    } else if (active[0]?.deadline) {
-      bits.push(`Next Fiverr: ${active[0].client} due ${active[0].deadline}.`);
+    const tasks = (await kv.get("tasks")) || [];
+    if (tasks.length) {
+      const preview = tasks.slice(0, 3).map((t) => t.text).join(", ");
+      bits.push(`${tasks.length} open task${tasks.length === 1 ? "" : "s"}: ${preview}${tasks.length > 3 ? ", ..." : ""}.`);
     }
   } catch (e) {}
 
-  // Top AI focus for the day
+  const fiverrLine = await activeFiverrLine();
+  if (fiverrLine) bits.push(fiverrLine);
+
   try {
     const s = await kv.get("aiSuggestions");
     if (s?.focusToday) bits.push(`Tip: ${s.focusToday}`);
@@ -56,29 +69,44 @@ async function buildMorning() {
 
 async function buildEvening() {
   const today = new Date().toISOString().slice(0, 10);
-  const workoutLog = (await kv.get("workoutLog")) || {};
+  const dayIndex = new Date().getDay();
+  const tomorrowDayIndex = (dayIndex + 1) % 7;
+  const bits = [];
 
-  let streak = 0;
-  let offset = 0;
-  while (true) {
-    const d = new Date();
-    d.setDate(d.getDate() - offset);
-    const key = d.toISOString().slice(0, 10);
-    if (workoutLog[key] && workoutLog[key].done) {
-      streak += 1;
-      offset += 1;
-    } else break;
-  }
+  // Accomplishments — everything logged to the completed history today
+  try {
+    const log = (await kv.get("completedLog")) || [];
+    const doneToday = log.filter((e) => e.completedAt.slice(0, 10) === today);
+    bits.push(doneToday.length ? `Done today: ${doneToday.map((e) => e.label).join(", ")}.` : "Nothing checked off today.");
+  } catch (e) {}
 
-  const doneToday = !!(workoutLog[today] && workoutLog[today].done);
+  // Missed — business focus / workout not marked done
+  try {
+    const businessFocusLog = (await kv.get("businessFocusLog")) || {};
+    const workoutLog = (await kv.get("workoutLog")) || {};
+    const missed = [];
+    if (!businessFocusLog[today]) missed.push(RHYTHM[dayIndex].focus);
+    const workout = WORKOUT[dayIndex];
+    if (workout.exercises.length && !(workoutLog[today] && workoutLog[today].done)) missed.push(workout.focus);
+    if (missed.length) bits.push(`Still open: ${missed.join(", ")}.`);
+  } catch (e) {}
 
-  if (streak > 0 && doneToday) {
-    return `${streak}-day streak and counting. You showed up today — that consistency is exactly how the goals get hit. Rest up.`;
-  }
-  if (streak > 0 && !doneToday) {
-    return `You're on a ${streak}-day streak — don't let today be the break in it. Even a short session keeps it alive.`;
-  }
-  return "A fresh start tomorrow. One workout gets the streak going again — you've got this.";
+  // Today's income
+  try {
+    const { summary } = await getSalesSummary();
+    if (summary && summary.revenueToday > 0) {
+      bits.push(`Sales today: $${summary.revenueToday.toFixed(2)} (${summary.ordersToday} order${summary.ordersToday === 1 ? "" : "s"}).`);
+    }
+  } catch (e) {}
+
+  const fiverrLine = await activeFiverrLine();
+  if (fiverrLine) bits.push(fiverrLine);
+
+  // Tomorrow's prep
+  const tomorrowWorkout = WORKOUT[tomorrowDayIndex];
+  bits.push(`Tomorrow: ${RHYTHM[tomorrowDayIndex].focus}${tomorrowWorkout.exercises.length ? ` + ${tomorrowWorkout.focus} workout` : ""}.`);
+
+  return bits.join(" ");
 }
 
 export async function GET(request) {
@@ -121,7 +149,6 @@ export async function GET(request) {
   try {
     await webpush.sendNotification(subscription, JSON.stringify({ title, body }));
     sentLog[dedupeKey] = true;
-    // keep the log from growing forever
     const keys = Object.keys(sentLog);
     if (keys.length > 30) {
       const trimmed = {};

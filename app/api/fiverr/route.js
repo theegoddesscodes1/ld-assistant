@@ -1,5 +1,6 @@
 import { kv } from "@vercel/kv";
 import { NextResponse } from "next/server";
+import { FIVERR_STATUSES } from "../../../lib/fiverrStatus";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +22,7 @@ export async function POST(request) {
     deadline,
     rate: rate.trim(),
     notes: notes.trim(),
-    status: "Inquiry",
+    status: FIVERR_STATUSES[1], // "Needs Requirements" — natural starting point for a fresh inquiry
     createdDate: new Date().toISOString().slice(0, 10),
   };
   const updated = [entry, ...clients];

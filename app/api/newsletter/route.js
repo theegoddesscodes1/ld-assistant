@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-const DEFAULT_CADENCE_DAYS = 7;
+const DEFAULT_CADENCE_DAYS = 15; // 1-2x/month
 
 export async function GET() {
   const history = (await kv.get("newsletterHistory")) || [];
@@ -15,7 +15,7 @@ export async function GET() {
   if (lastSent) {
     daysSinceLastSend = Math.floor((Date.now() - new Date(lastSent).getTime()) / (1000 * 60 * 60 * 24));
     if (daysSinceLastSend >= cadenceDays) dueStatus = "overdue";
-    else if (daysSinceLastSend >= cadenceDays - 2) dueStatus = "due-soon";
+    else if (daysSinceLastSend >= cadenceDays - 3) dueStatus = "due-soon";
     else dueStatus = "ok";
   }
 

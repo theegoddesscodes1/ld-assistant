@@ -8,7 +8,6 @@ const LINKS = [
   { href: "/", label: "Today" },
   { href: "/business", label: "Business" },
   { href: "/fiverr", label: "Fiverr" },
-  { href: "/products", label: "Products" },
   { href: "/velvet", label: "Velvet Circle" },
   { href: "/finances", label: "Finances" },
   { href: "/fitness", label: "Fitness" },
@@ -29,10 +28,10 @@ export default function Nav() {
       <div
         style={{
           display: "flex",
-          justifyContent: "center",
+          justifyContent: "flex-start",
           gap: 2,
           borderBottom: `1px solid ${C.greige}`,
-          padding: "0 8px",
+          padding: "0 16px",
           overflowX: "auto",
         }}
       >
@@ -54,6 +53,7 @@ export default function Nav() {
                 color: active ? C.oxblood : C.charcoal,
                 textDecoration: "none",
                 flexShrink: 0,
+                whiteSpace: "nowrap",
               }}
             >
               {label}

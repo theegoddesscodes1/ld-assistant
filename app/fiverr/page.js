@@ -2,23 +2,27 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { C, serif, sans, EyebrowLabel, PageHeader, StatTile, Card, Pill, RemoveButton, buttonStyle, inputStyle, money } from "../../lib/theme";
+import { FIVERR_STATUSES, FIVERR_NEXT_STEP, normalizeFiverrStatus } from "../../lib/fiverrStatus";
 
 const GIG_TYPES = ["Website Build", "Logo Design", "Site Refresh", "Digital Template"];
-const STATUSES = ["Inquiry", "In Progress", "Revisions", "Delivered"];
 
 export default function FiverrPage() {
   const [clients, setClients] = useState([]);
   const [transactions, setTransactions] = useState([]);
+  const [completedLog, setCompletedLog] = useState([]);
+  const [tasks, setTasks] = useState([]);
   const [client, setClient] = useState("");
   const [gigType, setGigType] = useState(GIG_TYPES[0]);
   const [deadline, setDeadline] = useState("");
   const [rate, setRate] = useState("");
   const [notes, setNotes] = useState("");
-  const [showDelivered, setShowDelivered] = useState(false);
+  const [showApproved, setShowApproved] = useState(false);
 
   useEffect(() => {
-    fetch("/api/fiverr").then((r) => r.json()).then((d) => setClients(d.clients || []));
+    fetch("/api/fiverr").then((r) => r.json()).then((d) => setClients((d.clients || []).map((c) => ({ ...c, status: normalizeFiverrStatus(c.status) }))));
     fetch("/api/finances").then((r) => r.json()).then((d) => setTransactions(d.transactions || [])).catch(() => {});
+    fetch("/api/completed").then((r) => r.json()).then((d) => setCompletedLog(d.log || []));
+    fetch("/api/tasks").then((r) => r.json()).then((d) => setTasks(d.tasks || []));
   }, []);
 
   async function addClient() {
@@ -28,7 +32,8 @@ export default function FiverrPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ client: client.trim(), gigType, deadline, rate, notes }),
     });
-    setClients((await res.json()).clients);
+    const data = await res.json();
+    setClients((data.clients || []).map((c) => ({ ...c, status: normalizeFiverrStatus(c.status) })));
     setClient("");
     setDeadline("");
     setRate("");
@@ -41,16 +46,34 @@ export default function FiverrPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status }),
     });
-    setClients((await res.json()).clients);
+    const data = await res.json();
+    setClients((data.clients || []).map((c) => ({ ...c, status: normalizeFiverrStatus(c.status) })));
+    fetch("/api/completed").then((r) => r.json()).then((d) => setCompletedLog(d.log || []));
   }
 
   async function deleteClient(id) {
     const res = await fetch(`/api/fiverr/${id}`, { method: "DELETE" });
-    setClients((await res.json()).clients);
+    const data = await res.json();
+    setClients((data.clients || []).map((c) => ({ ...c, status: normalizeFiverrStatus(c.status) })));
   }
 
-  const active = clients.filter((c) => c.status !== "Delivered");
-  const visible = clients.filter((c) => showDelivered || c.status !== "Delivered");
+  async function completeTask(id) {
+    await fetch(`/api/tasks/${id}`, { method: "PATCH" });
+    const [t, c] = await Promise.all([
+      fetch("/api/tasks").then((r) => r.json()),
+      fetch("/api/completed").then((r) => r.json()),
+    ]);
+    setTasks(t.tasks || []);
+    setCompletedLog(c.log || []);
+  }
+
+  const active = clients.filter((c) => c.status !== "Approved");
+  const visible = clients.filter((c) => showApproved || c.status !== "Approved");
+  const fiverrTasks = useMemo(() => tasks.filter((t) => t.tag === "Fiverr"), [tasks]);
+  const fiverrCompletedLog = useMemo(
+    () => completedLog.filter((e) => e.type === "fiverr" || (e.type === "task" && e.tag === "Fiverr")),
+    [completedLog]
+  );
 
   const nextDeadline = useMemo(
     () => active.filter((c) => c.deadline).sort((a, b) => a.deadline.localeCompare(b.deadline))[0],
@@ -103,12 +126,12 @@ export default function FiverrPage() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <EyebrowLabel>Active &amp; Upcoming</EyebrowLabel>
         <label style={{ fontFamily: sans, fontSize: 12, color: C.charcoal, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-          <input type="checkbox" checked={showDelivered} onChange={(e) => setShowDelivered(e.target.checked)} />
-          show delivered
+          <input type="checkbox" checked={showApproved} onChange={(e) => setShowApproved(e.target.checked)} />
+          show approved
         </label>
       </div>
 
-      <div style={{ marginTop: 14 }}>
+      <div style={{ marginTop: 14, marginBottom: 40 }}>
         {visible.length === 0 && <p style={{ fontFamily: sans, fontSize: 13, opacity: 0.6 }}>Nothing here.</p>}
         {visible.map((c) => (
           <Card key={c.id} style={{ marginBottom: 12 }}>
@@ -124,8 +147,11 @@ export default function FiverrPage() {
               <RemoveButton onClick={() => deleteClient(c.id)} />
             </div>
             {c.notes && <p style={{ fontFamily: sans, fontSize: 13, margin: "10px 0", lineHeight: 1.5 }}>{c.notes}</p>}
+            {FIVERR_NEXT_STEP[c.status] && (
+              <p style={{ fontFamily: sans, fontSize: 12, margin: "0 0 10px 0", fontStyle: "italic", opacity: 0.7 }}>{FIVERR_NEXT_STEP[c.status]}</p>
+            )}
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
-              {STATUSES.map((s) => (
+              {FIVERR_STATUSES.map((s) => (
                 <Pill key={s} active={c.status === s} onClick={() => updateStatus(c.id, s)}>
                   {s}
                 </Pill>
@@ -134,6 +160,39 @@ export default function FiverrPage() {
           </Card>
         ))}
       </div>
+
+      {fiverrTasks.length > 0 && (
+        <div style={{ marginBottom: 40 }}>
+          <EyebrowLabel>Fiverr Tasks</EyebrowLabel>
+          <div style={{ marginTop: 12 }}>
+            {fiverrTasks.map((t) => (
+              <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${C.greige}` }}>
+                <button
+                  onClick={() => completeTask(t.id)}
+                  style={{ width: 16, height: 16, flexShrink: 0, border: `1px solid ${C.oxblood}`, backgroundColor: "transparent", cursor: "pointer", padding: 0 }}
+                />
+                <span style={{ fontFamily: sans, fontSize: 13 }}>{t.text}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {fiverrCompletedLog.length > 0 && (
+        <div>
+          <EyebrowLabel>Completed</EyebrowLabel>
+          <div style={{ marginTop: 12 }}>
+            {fiverrCompletedLog.slice(0, 20).map((entry) => (
+              <div key={entry.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${C.greige}` }}>
+                <span style={{ fontFamily: sans, fontSize: 13 }}>{entry.label}</span>
+                <span style={{ fontFamily: sans, fontSize: 11, opacity: 0.6 }}>
+                  {new Date(entry.completedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

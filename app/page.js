@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { C, serif, sans, EyebrowLabel, StatTile, Card, RemoveButton, buttonStyle, ghostButtonStyle, inputStyle, money } from "../lib/theme";
+import { FIVERR_STATUSES } from "../lib/fiverrStatus";
+import { TASK_TAGS } from "../lib/taskTags";
 
 function urlBase64ToUint8Array(base64String) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -31,6 +33,7 @@ export default function Page() {
   const [suggestions, setSuggestions] = useState(null);
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [taskInput, setTaskInput] = useState("");
+  const [taskTag, setTaskTag] = useState(TASK_TAGS[2]); // "Personal" by default
   const [notifStatus, setNotifStatus] = useState("unknown");
 
   const today = new Date().toISOString().slice(0, 10);
@@ -48,7 +51,8 @@ export default function Page() {
     loadDigest();
     // suggestions come from cache instantly; refresh happens server-side on schedule
     fetch("/api/suggestions").then((r) => r.json()).then((d) => { if (!d.error) setSuggestions(d); }).catch(() => {});
-    const id = setInterval(loadDigest, 5 * 60 * 1000);
+    // 30s keeps this fresh across devices/tabs without a manual reload
+    const id = setInterval(loadDigest, 30 * 1000);
 
     if (typeof window !== "undefined") {
       if (!("Notification" in window) || !("serviceWorker" in navigator)) setNotifStatus("unsupported");
@@ -96,13 +100,13 @@ export default function Page() {
     await fetch("/api/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: taskInput.trim() }),
+      body: JSON.stringify({ text: taskInput.trim(), tag: taskTag }),
     });
     setTaskInput("");
     loadDigest();
   }
 
-  async function toggleTask(id) {
+  async function completeTask(id) {
     await fetch(`/api/tasks/${id}`, { method: "PATCH" });
     loadDigest();
   }
@@ -116,7 +120,7 @@ export default function Page() {
     await fetch("/api/workouts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date: today }),
+      body: JSON.stringify({ date: today, focus: digest?.workout?.focus }),
     });
     loadDigest();
   }
@@ -125,24 +129,32 @@ export default function Page() {
     await fetch("/api/business-focus", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date: today }),
+      body: JSON.stringify({ date: today, focus: digest?.businessFocus?.focus }),
+    });
+    loadDigest();
+  }
+
+  async function updateFiverrStatus(id, status) {
+    await fetch(`/api/fiverr/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
     });
     loadDigest();
   }
 
   // derived
   const tasks = digest?.tasks || [];
-  const openTasks = tasks.filter((t) => !t.done);
-  const doneCount = tasks.filter((t) => t.done).length;
   const workoutHasSession = (digest?.workout?.exercises?.length || 0) > 0;
-  const businessFocusDone = false; // toggle reflects on reload via digest; kept simple
 
   const focusLine = useMemo(() => {
-    if (suggestions?.focusToday) return suggestions.focusToday;
     if (!digest) return "Pulling today together...";
     const dueToday = (digest.fiverrActive || []).find((c) => c.deadline === today);
     if (dueToday) return `${dueToday.client} is due today.`;
-    if (digest.newsletter?.dueStatus === "overdue") return "Your newsletter's overdue — worth sending today.";
+    if (digest.newsletter?.dueStatus === "overdue") return "Your newsletter's overdue — worth sending soon.";
+    if (digest.inventoryAlerts?.length) return `${digest.inventoryAlerts[0].title} is running low — ${digest.inventoryAlerts[0].totalInventory} left.`;
+    if (suggestions?.focusToday) return suggestions.focusToday;
+    if (digest.businessFocus?.done && digest.fitness?.todayDone) return "Today's focus and workout are both done — nice.";
     return `Today's focus: ${digest.businessFocus?.focus}.`;
   }, [suggestions, digest, today]);
 
@@ -175,6 +187,35 @@ export default function Page() {
         {focusLine}
       </p>
 
+      {/* ACTIVE FIVERR — priority placement, near the top */}
+      {digest?.fiverrPriority && (
+        <Card style={{ marginTop: 20, borderColor: C.oxblood }}>
+          <EyebrowLabel>Active Fiverr — Priority</EyebrowLabel>
+          <p style={{ fontFamily: serif, fontSize: 19, margin: "8px 0 2px 0" }}>{digest.fiverrPriority.client}</p>
+          <p style={{ fontFamily: sans, fontSize: 13, opacity: 0.7, margin: "0 0 12px 0" }}>
+            {digest.fiverrPriority.gigType}
+            {digest.fiverrPriority.deadline ? ` · due ${digest.fiverrPriority.deadline}` : ""}
+          </p>
+          <select
+            value={digest.fiverrPriority.status}
+            onChange={(e) => updateFiverrStatus(digest.fiverrPriority.id, e.target.value)}
+            style={{ fontFamily: sans, fontSize: 12, border: `1px solid ${C.greige}`, padding: "6px 8px", backgroundColor: C.warmWhite, marginBottom: 10 }}
+          >
+            {FIVERR_STATUSES.map((s2) => (
+              <option key={s2} value={s2}>{s2}</option>
+            ))}
+          </select>
+          {digest.fiverrPriority.nextStep && (
+            <p style={{ fontFamily: sans, fontSize: 13, margin: 0, fontStyle: "italic", opacity: 0.8 }}>{digest.fiverrPriority.nextStep}</p>
+          )}
+          {digest.fiverrActive.length > 1 && (
+            <p style={{ fontFamily: sans, fontSize: 11, margin: "10px 0 0 0", opacity: 0.5 }}>
+              +{digest.fiverrActive.length - 1} more active — full list on the Fiverr page.
+            </p>
+          )}
+        </Card>
+      )}
+
       {/* AT A GLANCE — everything on one screen */}
       <SectionTitle>At a Glance</SectionTitle>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
@@ -204,10 +245,23 @@ export default function Page() {
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         <Card style={{ flex: "1 1 260px" }}>
           <EyebrowLabel>Business</EyebrowLabel>
-          <p style={{ fontFamily: serif, fontSize: 19, margin: "8px 0 6px 0" }}>{digest?.businessFocus?.focus || "—"}</p>
-          <p style={{ fontFamily: sans, fontSize: 13, margin: "0 0 12px 0", lineHeight: 1.5 }}>{digest?.businessFocus?.detail}</p>
+          {digest?.businessFocus?.done ? (
+            <>
+              <p style={{ fontFamily: serif, fontSize: 19, margin: "8px 0 6px 0" }}>Done for today ✓</p>
+              <p style={{ fontFamily: sans, fontSize: 13, margin: "0 0 12px 0", lineHeight: 1.5, opacity: 0.75 }}>
+                {digest?.fiverrPriority
+                  ? `Next up: ${digest.fiverrPriority.client} needs ${digest.fiverrPriority.status.toLowerCase()}.`
+                  : suggestions?.focusToday || "Nothing else flagged — check Tasks below."}
+              </p>
+            </>
+          ) : (
+            <>
+              <p style={{ fontFamily: serif, fontSize: 19, margin: "8px 0 6px 0" }}>{digest?.businessFocus?.focus || "—"}</p>
+              <p style={{ fontFamily: sans, fontSize: 13, margin: "0 0 12px 0", lineHeight: 1.5 }}>{digest?.businessFocus?.detail}</p>
+            </>
+          )}
           <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontFamily: sans, fontSize: 13 }}>
-            <input type="checkbox" onChange={toggleBusinessFocus} />
+            <input type="checkbox" checked={!!digest?.businessFocus?.done} onChange={toggleBusinessFocus} />
             Mark done
           </label>
         </Card>
@@ -230,40 +284,6 @@ export default function Page() {
         </Card>
       </div>
 
-      {/* ACTIVE FIVERR */}
-      {(digest?.fiverrActive?.length || 0) > 0 && (
-        <>
-          <SectionTitle>Active Fiverr Orders</SectionTitle>
-          {digest.fiverrActive.map((c) => (
-            <Card key={c.id} style={{ marginBottom: 10 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
-                <div>
-                  <span style={{ fontFamily: serif, fontSize: 17 }}>{c.client}</span>
-                  <span style={{ fontFamily: sans, fontSize: 12, opacity: 0.7, marginLeft: 10 }}>{c.gigType}</span>
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <span
-                    style={{
-                      fontFamily: sans, fontSize: 10, letterSpacing: 1, textTransform: "uppercase",
-                      color: c.status === "Revisions" ? C.oxblood : C.charcoal,
-                      border: `1px solid ${c.status === "Revisions" ? C.oxblood : C.greige}`,
-                      padding: "3px 8px",
-                    }}
-                  >
-                    {c.status}
-                  </span>
-                  {c.deadline && (
-                    <span style={{ fontFamily: sans, fontSize: 12, opacity: 0.7, marginLeft: 8, color: c.deadline === today ? C.oxblood : C.charcoal }}>
-                      due {c.deadline}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </Card>
-          ))}
-        </>
-      )}
-
       {/* AI SUGGESTIONS — the proactive core */}
       <SectionTitle
         right={
@@ -283,8 +303,8 @@ export default function Page() {
         <Card>
           <p style={{ fontFamily: sans, fontSize: 13, opacity: 0.7, margin: 0, lineHeight: 1.6 }}>
             {suggestLoading
-              ? "Analyzing your sales, catalog, and latest trends..."
-              : "Tap refresh to have your assistant analyze your real data and suggest products, posts, and newsletter timing. (Needs the Anthropic key connected.)"}
+              ? "Analyzing your sales, catalog, Fiverr orders, and latest trends..."
+              : "Tap refresh to have your assistant analyze your real data and suggest products, posts, Fiverr moves, and newsletter timing. (Needs the Anthropic key connected.)"}
           </p>
         </Card>
       )}
@@ -309,6 +329,21 @@ export default function Page() {
             </Card>
           )}
 
+          {/* Fiverr */}
+          {suggestions.fiverr?.length > 0 && (
+            <Card>
+              <EyebrowLabel>Fiverr</EyebrowLabel>
+              <div style={{ marginTop: 10 }}>
+                {suggestions.fiverr.map((f, i) => (
+                  <div key={i} style={{ padding: "8px 0", borderBottom: i < suggestions.fiverr.length - 1 ? `1px solid ${C.greige}` : "none" }}>
+                    <p style={{ fontFamily: sans, fontSize: 13, margin: 0, lineHeight: 1.5 }}>{f.suggestion}</p>
+                    <p style={{ fontFamily: sans, fontSize: 12, margin: "4px 0 0 0", opacity: 0.6 }}>{f.why}</p>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
           {/* Social */}
           {suggestions.social?.length > 0 && (
             <Card>
@@ -327,7 +362,7 @@ export default function Page() {
             </Card>
           )}
 
-          {/* Newsletter — replaces the old static "log a send" */}
+          {/* Newsletter */}
           {suggestions.newsletter && (
             <Card style={{ borderColor: suggestions.newsletter.shouldSend ? C.oxblood : C.greige }}>
               <EyebrowLabel>Newsletter</EyebrowLabel>
@@ -376,25 +411,34 @@ export default function Page() {
       )}
 
       {/* TASKS */}
-      <SectionTitle>Tasks {openTasks.length > 0 ? `· ${openTasks.length} open` : ""}{doneCount > 0 ? `, ${doneCount} done` : ""}</SectionTitle>
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+      <SectionTitle>Tasks {tasks.length > 0 ? `· ${tasks.length} open` : ""}</SectionTitle>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         <input
-          style={inputStyle}
+          style={{ ...inputStyle, flex: "1 1 180px" }}
           placeholder="Add a task..."
           value={taskInput}
           onChange={(e) => setTaskInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && addTask()}
         />
+        <select style={{ ...inputStyle, width: "auto" }} value={taskTag} onChange={(e) => setTaskTag(e.target.value)}>
+          {TASK_TAGS.map((t) => (
+            <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
         <button className="lux-btn" onClick={addTask} style={buttonStyle}>Add</button>
       </div>
+      {tasks.length === 0 && (
+        <p style={{ fontFamily: sans, fontSize: 13, opacity: 0.6, margin: "4px 0" }}>Nothing open — add one above.</p>
+      )}
       {tasks.map((t) => (
         <div key={t.id} className="lux-row" style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 6px", borderBottom: `1px solid ${C.greige}` }}>
           <button
             className="lux-toggle"
-            onClick={() => toggleTask(t.id)}
-            style={{ width: 18, height: 18, flexShrink: 0, border: `1px solid ${C.oxblood}`, backgroundColor: t.done ? C.oxblood : "transparent", cursor: "pointer", padding: 0 }}
+            onClick={() => completeTask(t.id)}
+            style={{ width: 18, height: 18, flexShrink: 0, border: `1px solid ${C.oxblood}`, backgroundColor: "transparent", cursor: "pointer", padding: 0 }}
           />
-          <span style={{ fontFamily: sans, fontSize: 14, flex: 1, textDecoration: t.done ? "line-through" : "none", opacity: t.done ? 0.5 : 1 }}>{t.text}</span>
+          <span style={{ fontFamily: sans, fontSize: 14, flex: 1 }}>{t.text}</span>
+          <span style={{ fontFamily: sans, fontSize: 10, letterSpacing: 0.5, textTransform: "uppercase", opacity: 0.5 }}>{t.tag || "Personal"}</span>
           <RemoveButton onClick={() => deleteTask(t.id)} />
         </div>
       ))}
