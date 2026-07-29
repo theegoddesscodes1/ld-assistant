@@ -149,13 +149,16 @@ export default function Page() {
 
   const focusLine = useMemo(() => {
     if (!digest) return "Pulling today together...";
+    const openTaskCount = (digest.tasks || []).length;
+    const taskSuffix = openTaskCount > 0 ? ` ${openTaskCount} task${openTaskCount === 1 ? "" : "s"} still open.` : "";
+
     const dueToday = (digest.fiverrActive || []).find((c) => c.deadline === today);
-    if (dueToday) return `${dueToday.client} is due today.`;
-    if (digest.newsletter?.dueStatus === "overdue") return "Your newsletter's overdue — worth sending soon.";
-    if (digest.inventoryAlerts?.length) return `${digest.inventoryAlerts[0].title} is running low — ${digest.inventoryAlerts[0].totalInventory} left.`;
-    if (suggestions?.focusToday) return suggestions.focusToday;
-    if (digest.businessFocus?.done && digest.fitness?.todayDone) return "Today's focus and workout are both done — nice.";
-    return `Today's focus: ${digest.businessFocus?.focus}.`;
+    if (dueToday) return `${dueToday.client} is due today.${taskSuffix}`;
+    if (digest.newsletter?.dueStatus === "overdue") return `Your newsletter's overdue — worth sending soon.${taskSuffix}`;
+    if (digest.inventoryAlerts?.length) return `${digest.inventoryAlerts[0].title} is running low — ${digest.inventoryAlerts[0].totalInventory} left.${taskSuffix}`;
+    if (suggestions?.focusToday) return `${suggestions.focusToday}${taskSuffix}`;
+    if (digest.businessFocus?.done && digest.fitness?.todayDone) return `Today's focus and workout are both done.${taskSuffix || " Nothing else on deck."}`;
+    return `Today's focus: ${digest.businessFocus?.focus}.${taskSuffix}`;
   }, [suggestions, digest, today]);
 
   const s = digest?.shopify?.summary;
