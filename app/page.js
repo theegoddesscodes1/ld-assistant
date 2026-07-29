@@ -35,6 +35,7 @@ export default function Page() {
   const [taskInput, setTaskInput] = useState("");
   const [taskTag, setTaskTag] = useState(TASK_TAGS[2]); // "Personal" by default
   const [notifStatus, setNotifStatus] = useState("unknown");
+  const [actionError, setActionError] = useState(null);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -44,7 +45,19 @@ export default function Page() {
   }, []);
 
   function loadDigest() {
-    fetch("/api/digest").then((r) => r.json()).then(setDigest).catch(() => {});
+    fetch("/api/digest")
+      .then(async (r) => {
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({}));
+          throw new Error(body.error || `Server returned ${r.status}`);
+        }
+        return r.json();
+      })
+      .then((d) => {
+        setDigest(d);
+        setActionError(null);
+      })
+      .catch((e) => setActionError(`Couldn't load today's data: ${e.message}`));
   }
 
   useEffect(() => {
@@ -95,52 +108,82 @@ export default function Page() {
     setSuggestLoading(false);
   }
 
+  // Every mutation below follows the same shape: try the request, throw with
+  // a real message on a non-OK response, surface it in actionError on
+  // failure. Nothing fails silently anymore — either the UI updates or you
+  // see exactly why it didn't.
+  async function runAction(url, options, label) {
+    setActionError(null);
+    try {
+      const res = await fetch(url, options);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Server returned ${res.status}`);
+      }
+      loadDigest();
+      return true;
+    } catch (e) {
+      setActionError(`${label}: ${e.message}`);
+      return false;
+    }
+  }
+
   async function addTask() {
     if (!taskInput.trim()) return;
-    await fetch("/api/tasks", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: taskInput.trim(), tag: taskTag }),
-    });
-    setTaskInput("");
-    loadDigest();
+    const ok = await runAction(
+      "/api/tasks",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: taskInput.trim(), tag: taskTag }),
+      },
+      "Couldn't add task"
+    );
+    if (ok) setTaskInput("");
   }
 
   async function completeTask(id) {
-    await fetch(`/api/tasks/${id}`, { method: "PATCH" });
-    loadDigest();
+    await runAction(`/api/tasks/${id}`, { method: "PATCH" }, "Couldn't complete task");
   }
 
   async function deleteTask(id) {
-    await fetch(`/api/tasks/${id}`, { method: "DELETE" });
-    loadDigest();
+    await runAction(`/api/tasks/${id}`, { method: "DELETE" }, "Couldn't delete task");
   }
 
   async function toggleWorkout() {
-    await fetch("/api/workouts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date: today, focus: digest?.workout?.focus }),
-    });
-    loadDigest();
+    await runAction(
+      "/api/workouts",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: today, focus: digest?.workout?.focus }),
+      },
+      "Couldn't update workout"
+    );
   }
 
   async function toggleBusinessFocus() {
-    await fetch("/api/business-focus", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date: today, focus: digest?.businessFocus?.focus }),
-    });
-    loadDigest();
+    await runAction(
+      "/api/business-focus",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: today, focus: digest?.businessFocus?.focus }),
+      },
+      "Couldn't update business focus"
+    );
   }
 
   async function updateFiverrStatus(id, status) {
-    await fetch(`/api/fiverr/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status }),
-    });
-    loadDigest();
+    await runAction(
+      `/api/fiverr/${id}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      },
+      "Couldn't update Fiverr status"
+    );
   }
 
   // derived
@@ -166,6 +209,22 @@ export default function Page() {
 
   return (
     <div style={{ maxWidth: 820, margin: "0 auto", padding: "36px 24px 80px 24px" }}>
+      {actionError && (
+        <div
+          style={{
+            backgroundColor: "#fdecec",
+            border: `1px solid ${C.oxblood}`,
+            color: C.oxblood,
+            padding: "12px 16px",
+            marginBottom: 20,
+            fontFamily: sans,
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          {actionError}
+        </div>
+      )}
       {notifStatus === "off" && (
         <div style={{ textAlign: "center", marginBottom: 20 }}>
           <button className="lux-btn" onClick={enableNotifications} style={buttonStyle}>
