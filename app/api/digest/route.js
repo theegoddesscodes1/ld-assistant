@@ -1,6 +1,6 @@
 import { kv } from "@vercel/kv";
 import { NextResponse } from "next/server";
-import { getSalesSummary, getInventoryAlerts, getAbandonedCheckoutSummary } from "../../../lib/shopify";
+import { getSalesSummary, getInventoryAlerts, getAbandonedCheckoutSummary, getProductsSince, getCampaignAttributedOrders } from "../../../lib/shopify";
 import { RHYTHM, WORKOUT } from "../../../lib/schedule";
 import { normalizeFiverrStatus, FIVERR_NEXT_STEP } from "../../../lib/fiverrStatus";
 
@@ -131,7 +131,9 @@ export async function GET() {
   }
 
   // Newsletter cadence — default target is 1-2x/month (~every 15 days)
-  // rather than weekly.
+  // rather than weekly. newProducts is a grounded fact (pulled directly
+  // from Shopify) so this card has something real to say even if the
+  // send-detection cron or the AI cache hasn't caught up.
   try {
     const history = (await kv.get("newsletterHistory")) || [];
     const cadenceDays = (await kv.get("newsletterCadenceDays")) ?? 15;
@@ -144,9 +146,29 @@ export async function GET() {
       else if (daysSince >= cadenceDays - 3) dueStatus = "due-soon";
       else dueStatus = "ok";
     }
-    out.newsletter = { lastSent, daysSince, dueStatus, cadenceDays, lastSubject: history[0]?.subject || null };
+
+    let newProducts = [];
+    try {
+      const sinceDate = lastSent ? new Date(lastSent) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      newProducts = await getProductsSince(sinceDate.toISOString());
+    } catch (e) {}
+
+    // Whichever campaign the newsletter-check cron is currently tracking —
+    // stays the same until a newer send replaces it. Performance is
+    // attributed orders via UTM match; null if unavailable rather than 0,
+    // so the UI can tell "no orders yet" apart from "couldn't check."
+    let tracked = null;
+    try {
+      tracked = await kv.get("newsletterTracked");
+      if (tracked) {
+        const performance = await getCampaignAttributedOrders(tracked.utmCampaign, tracked.sentAt);
+        tracked = { ...tracked, performance };
+      }
+    } catch (e) {}
+
+    out.newsletter = { lastSent, daysSince, dueStatus, cadenceDays, lastSubject: history[0]?.subject || null, newProducts, tracked };
   } catch (e) {
-    out.newsletter = { lastSent: null, daysSince: null, dueStatus: "no-data", cadenceDays: 15, lastSubject: null };
+    out.newsletter = { lastSent: null, daysSince: null, dueStatus: "no-data", cadenceDays: 15, lastSubject: null, newProducts: [], tracked: null };
   }
 
   // Tasks
@@ -164,7 +186,7 @@ export async function GET() {
     out.suggestions = null;
   }
 
-  return NextResponse.json(out);
+  return NextResponse.json(out, { headers: { "Cache-Control": "no-store, max-age=0" } });
 }
 
 // Shared so both the digest and the finances page show identical numbers.

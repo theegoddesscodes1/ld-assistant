@@ -19,10 +19,10 @@ export default function FiverrPage() {
   const [showApproved, setShowApproved] = useState(false);
 
   useEffect(() => {
-    fetch("/api/fiverr").then((r) => r.json()).then((d) => setClients((d.clients || []).map((c) => ({ ...c, status: normalizeFiverrStatus(c.status) }))));
-    fetch("/api/finances").then((r) => r.json()).then((d) => setTransactions(d.transactions || [])).catch(() => {});
-    fetch("/api/completed").then((r) => r.json()).then((d) => setCompletedLog(d.log || []));
-    fetch("/api/tasks").then((r) => r.json()).then((d) => setTasks(d.tasks || []));
+    fetch("/api/fiverr", { cache: "no-store" }).then((r) => r.json()).then((d) => setClients((d.clients || []).map((c) => ({ ...c, status: normalizeFiverrStatus(c.status) }))));
+    fetch("/api/finances", { cache: "no-store" }).then((r) => r.json()).then((d) => setTransactions(d.transactions || [])).catch(() => {});
+    fetch("/api/completed", { cache: "no-store" }).then((r) => r.json()).then((d) => setCompletedLog(d.log || []));
+    fetch("/api/tasks", { cache: "no-store" }).then((r) => r.json()).then((d) => setTasks(d.tasks || []));
   }, []);
 
   async function addClient() {
@@ -48,7 +48,7 @@ export default function FiverrPage() {
     });
     const data = await res.json();
     setClients((data.clients || []).map((c) => ({ ...c, status: normalizeFiverrStatus(c.status) })));
-    fetch("/api/completed").then((r) => r.json()).then((d) => setCompletedLog(d.log || []));
+    fetch("/api/completed", { cache: "no-store" }).then((r) => r.json()).then((d) => setCompletedLog(d.log || []));
   }
 
   async function deleteClient(id) {
@@ -60,8 +60,8 @@ export default function FiverrPage() {
   async function completeTask(id) {
     await fetch(`/api/tasks/${id}`, { method: "PATCH" });
     const [t, c] = await Promise.all([
-      fetch("/api/tasks").then((r) => r.json()),
-      fetch("/api/completed").then((r) => r.json()),
+      fetch("/api/tasks", { cache: "no-store" }).then((r) => r.json()),
+      fetch("/api/completed", { cache: "no-store" }).then((r) => r.json()),
     ]);
     setTasks(t.tasks || []);
     setCompletedLog(c.log || []);

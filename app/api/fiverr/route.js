@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   const clients = (await kv.get("fiverrClients")) || [];
-  return NextResponse.json({ clients });
+  return NextResponse.json({ clients }, { headers: { "Cache-Control": "no-store, max-age=0" } });
 }
 
 export async function POST(request) {

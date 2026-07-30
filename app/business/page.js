@@ -42,14 +42,14 @@ export default function BusinessPage() {
   const [newItemText, setNewItemText] = useState({});
 
   useEffect(() => {
-    fetch("/api/shopify").then((r) => r.json()).then(setShopify);
-    fetch("/api/campaigns").then((r) => r.json()).then((d) => setCampaigns(d.campaigns || []));
-    fetch("/api/research").then((r) => r.json()).then((d) => setDigests(d.digests || []));
-    fetch("/api/ideas").then((r) => r.json()).then((d) => setIdeas(d.ideas || []));
-    fetch("/api/completed").then((r) => r.json()).then((d) => setCompletedLog(d.log || []));
-    fetch("/api/tasks").then((r) => r.json()).then((d) => setTasks(d.tasks || []));
-    fetch("/api/digest").then((r) => r.json()).then(setDigest);
-    fetch("/api/products").then((r) => r.json()).then((d) => setProducts(d.products || []));
+    fetch("/api/shopify", { cache: "no-store" }).then((r) => r.json()).then(setShopify);
+    fetch("/api/campaigns", { cache: "no-store" }).then((r) => r.json()).then((d) => setCampaigns(d.campaigns || []));
+    fetch("/api/research", { cache: "no-store" }).then((r) => r.json()).then((d) => setDigests(d.digests || []));
+    fetch("/api/ideas", { cache: "no-store" }).then((r) => r.json()).then((d) => setIdeas(d.ideas || []));
+    fetch("/api/completed", { cache: "no-store" }).then((r) => r.json()).then((d) => setCompletedLog(d.log || []));
+    fetch("/api/tasks", { cache: "no-store" }).then((r) => r.json()).then((d) => setTasks(d.tasks || []));
+    fetch("/api/digest", { cache: "no-store" }).then((r) => r.json()).then(setDigest);
+    fetch("/api/products", { cache: "no-store" }).then((r) => r.json()).then((d) => setProducts(d.products || []));
   }, []);
 
   async function addCampaign() {
@@ -89,9 +89,9 @@ export default function BusinessPage() {
   async function completeTask(id) {
     await fetch(`/api/tasks/${id}`, { method: "PATCH" });
     const [t, c, d] = await Promise.all([
-      fetch("/api/tasks").then((r) => r.json()),
-      fetch("/api/completed").then((r) => r.json()),
-      fetch("/api/digest").then((r) => r.json()),
+      fetch("/api/tasks", { cache: "no-store" }).then((r) => r.json()),
+      fetch("/api/completed", { cache: "no-store" }).then((r) => r.json()),
+      fetch("/api/digest", { cache: "no-store" }).then((r) => r.json()),
     ]);
     setTasks(t.tasks || []);
     setCompletedLog(c.log || []);

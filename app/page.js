@@ -45,7 +45,7 @@ export default function Page() {
   }, []);
 
   function loadDigest() {
-    fetch("/api/digest")
+    fetch("/api/digest", { cache: "no-store" })
       .then(async (r) => {
         if (!r.ok) {
           const body = await r.json().catch(() => ({}));
@@ -63,7 +63,7 @@ export default function Page() {
   useEffect(() => {
     loadDigest();
     // suggestions come from cache instantly; refresh happens server-side on schedule
-    fetch("/api/suggestions").then((r) => r.json()).then((d) => { if (!d.error) setSuggestions(d); }).catch(() => {});
+    fetch("/api/suggestions", { cache: "no-store" }).then((r) => r.json()).then((d) => { if (!d.error) setSuggestions(d); }).catch(() => {});
     // 30s keeps this fresh across devices/tabs without a manual reload
     const id = setInterval(loadDigest, 30 * 1000);
 
@@ -77,25 +77,35 @@ export default function Page() {
   }, []);
 
   async function enableNotifications() {
+    setActionError(null);
     try {
+      if (!process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY) {
+        throw new Error("VAPID public key isn't configured on this deployment (NEXT_PUBLIC_VAPID_PUBLIC_KEY)");
+      }
       const reg = await navigator.serviceWorker.register("/sw.js");
       const permission = await Notification.requestPermission();
       if (permission !== "granted") {
         setNotifStatus(permission === "denied" ? "denied" : "off");
+        if (permission === "denied") setActionError("Notifications are blocked in your browser settings.");
         return;
       }
       const subscription = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY),
       });
-      await fetch("/api/push/subscribe", {
+      const res = await fetch("/api/push/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(subscription),
       });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Server returned ${res.status}`);
+      }
       setNotifStatus("on");
     } catch (e) {
       setNotifStatus("off");
+      setActionError(`Couldn't enable notifications: ${e.message}`);
     }
   }
 
@@ -432,7 +442,20 @@ export default function Page() {
                 {suggestions.newsletter.shouldSend ? "Worth sending one soon" : "No rush right now"}
                 {digest?.newsletter?.lastSent ? ` · last sent ${digest.newsletter.daysSince}d ago` : ""}
               </p>
+              {digest?.newsletter?.tracked && (
+                <p style={{ fontFamily: sans, fontSize: 13, margin: "0 0 6px 0", opacity: 0.85 }}>
+                  Tracking: <strong>{digest.newsletter.tracked.title}</strong>
+                  {digest.newsletter.tracked.performance
+                    ? ` — ${digest.newsletter.tracked.performance.orders} order${digest.newsletter.tracked.performance.orders === 1 ? "" : "s"} attributed so far (${money(digest.newsletter.tracked.performance.revenue)})`
+                    : " — performance data unavailable right now"}
+                </p>
+              )}
               <p style={{ fontFamily: sans, fontSize: 13, margin: "0 0 10px 0", opacity: 0.8, lineHeight: 1.5 }}>{suggestions.newsletter.why}</p>
+              {digest?.newsletter?.newProducts?.length > 0 && (
+                <p style={{ fontFamily: sans, fontSize: 13, margin: "0 0 10px 0", lineHeight: 1.5 }}>
+                  <strong>{digest.newsletter.newProducts.length}</strong> new product{digest.newsletter.newProducts.length === 1 ? "" : "s"} since your last send: {digest.newsletter.newProducts.join(", ")}
+                </p>
+              )}
               {suggestions.newsletter.themes?.length > 0 && (
                 <div>
                   <p style={{ fontFamily: sans, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: C.oxblood, margin: "0 0 4px 0" }}>Content ideas</p>
