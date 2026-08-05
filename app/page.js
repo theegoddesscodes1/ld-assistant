@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { C, serif, sans, EyebrowLabel, StatTile, Card, RemoveButton, buttonStyle, ghostButtonStyle, inputStyle, money } from "../lib/theme";
+import { C, serif, sans, EyebrowLabel, StatTile, Card, RemoveButton, buttonStyle, inputStyle, money } from "../lib/theme";
 import { FIVERR_STATUSES } from "../lib/fiverrStatus";
 import { TASK_TAGS } from "../lib/taskTags";
 
@@ -30,6 +30,8 @@ function SectionTitle({ children, right }) {
 export default function Page() {
   const [now, setNow] = useState(new Date());
   const [digest, setDigest] = useState(null);
+  const [insights, setInsights] = useState(null);
+  const [insightsLoading, setInsightsLoading] = useState(true);
   const [suggestions, setSuggestions] = useState(null);
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [taskInput, setTaskInput] = useState("");
@@ -44,28 +46,50 @@ export default function Page() {
     return () => clearInterval(id);
   }, []);
 
-  function loadDigest() {
-    fetch("/api/digest", { cache: "no-store" })
-      .then(async (r) => {
-        if (!r.ok) {
-          const body = await r.json().catch(() => ({}));
-          throw new Error(body.error || `Server returned ${r.status}`);
-        }
-        return r.json();
-      })
-      .then((d) => {
-        setDigest(d);
-        setActionError(null);
-      })
-      .catch((e) => setActionError(`Couldn't load today's data: ${e.message}`));
+  // Fast path — KV only, comes back in well under a second. Every action
+  // re-fetches this.
+  async function loadDigest() {
+    try {
+      const r = await fetch("/api/digest", { cache: "no-store" });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body.error || `Server returned ${r.status}`);
+      }
+      const d = await r.json();
+      setDigest(d);
+      setActionError(null);
+      return d;
+    } catch (e) {
+      setActionError(`Couldn't load today's data: ${e.message}`);
+      return null;
+    }
+  }
+
+  // Slow path — Shopify. Loaded separately so nothing interactive waits on it.
+  async function loadInsights() {
+    setInsightsLoading(true);
+    try {
+      const r = await fetch("/api/insights", { cache: "no-store" });
+      if (r.ok) setInsights(await r.json());
+    } catch (e) {
+      // Shopify being slow or down shouldn't surface as a page error —
+      // the affected tiles just show "—" instead.
+    }
+    setInsightsLoading(false);
   }
 
   useEffect(() => {
     loadDigest();
-    // suggestions come from cache instantly; refresh happens server-side on schedule
-    fetch("/api/suggestions", { cache: "no-store" }).then((r) => r.json()).then((d) => { if (!d.error) setSuggestions(d); }).catch(() => {});
-    // 30s keeps this fresh across devices/tabs without a manual reload
-    const id = setInterval(loadDigest, 30 * 1000);
+    loadInsights();
+    fetch("/api/suggestions", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => { if (!d.error) setSuggestions(d); })
+      .catch(() => {});
+
+    // Keeps things fresh across devices without a manual reload. Only the
+    // fast endpoint is polled; insights refresh on a much longer interval.
+    const fast = setInterval(loadDigest, 30 * 1000);
+    const slow = setInterval(loadInsights, 5 * 60 * 1000);
 
     if (typeof window !== "undefined") {
       if (!("Notification" in window) || !("serviceWorker" in navigator)) setNotifStatus("unsupported");
@@ -73,14 +97,17 @@ export default function Page() {
       else if (Notification.permission === "granted") setNotifStatus("on");
       else setNotifStatus("off");
     }
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(fast);
+      clearInterval(slow);
+    };
   }, []);
 
   async function enableNotifications() {
     setActionError(null);
     try {
       if (!process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY) {
-        throw new Error("VAPID public key isn't configured on this deployment (NEXT_PUBLIC_VAPID_PUBLIC_KEY)");
+        throw new Error("NEXT_PUBLIC_VAPID_PUBLIC_KEY isn't set on this deployment — add it in Vercel's environment variables.");
       }
       const reg = await navigator.serviceWorker.register("/sw.js");
       const permission = await Notification.requestPermission();
@@ -112,17 +139,22 @@ export default function Page() {
   async function refreshSuggestions() {
     setSuggestLoading(true);
     try {
-      const d = await fetch("/api/suggestions?refresh=1").then((r) => r.json());
+      const d = await fetch("/api/suggestions?refresh=1", { cache: "no-store" }).then((r) => r.json());
       if (!d.error) setSuggestions(d);
-    } catch (e) {}
+      else setActionError(`Couldn't refresh suggestions: ${d.error}`);
+    } catch (e) {
+      setActionError(`Couldn't refresh suggestions: ${e.message}`);
+    }
     setSuggestLoading(false);
   }
 
-  // Every mutation below follows the same shape: try the request, throw with
-  // a real message on a non-OK response, surface it in actionError on
-  // failure. Nothing fails silently anymore — either the UI updates or you
-  // see exactly why it didn't.
-  async function runAction(url, options, label) {
+  // Optimistic pattern: update what's on screen immediately, then send the
+  // request and reconcile with what the server actually saved. The UI never
+  // waits on the network to respond to a click, and a failed request rolls
+  // the change back with a visible error instead of leaving a lie on screen.
+  async function runAction(url, options, label, optimistic) {
+    const previous = digest;
+    if (optimistic && digest) setDigest(optimistic(digest));
     setActionError(null);
     try {
       const res = await fetch(url, options);
@@ -130,34 +162,49 @@ export default function Page() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error || `Server returned ${res.status}`);
       }
-      loadDigest();
+      await loadDigest();
       return true;
     } catch (e) {
+      if (optimistic && previous) setDigest(previous);
       setActionError(`${label}: ${e.message}`);
       return false;
     }
   }
 
   async function addTask() {
-    if (!taskInput.trim()) return;
+    const text = taskInput.trim();
+    if (!text) return;
+    const tag = taskTag;
+    setTaskInput("");
     const ok = await runAction(
       "/api/tasks",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: taskInput.trim(), tag: taskTag }),
+        body: JSON.stringify({ text, tag }),
       },
-      "Couldn't add task"
+      "Couldn't add task",
+      (d) => ({ ...d, tasks: [{ id: `pending-${Date.now()}`, text, tag, done: false }, ...(d.tasks || [])] })
     );
-    if (ok) setTaskInput("");
+    if (!ok) setTaskInput(text);
   }
 
   async function completeTask(id) {
-    await runAction(`/api/tasks/${id}`, { method: "PATCH" }, "Couldn't complete task");
+    await runAction(
+      `/api/tasks/${id}`,
+      { method: "PATCH" },
+      "Couldn't complete task",
+      (d) => ({ ...d, tasks: (d.tasks || []).filter((t) => t.id !== id) })
+    );
   }
 
   async function deleteTask(id) {
-    await runAction(`/api/tasks/${id}`, { method: "DELETE" }, "Couldn't delete task");
+    await runAction(
+      `/api/tasks/${id}`,
+      { method: "DELETE" },
+      "Couldn't delete task",
+      (d) => ({ ...d, tasks: (d.tasks || []).filter((t) => t.id !== id) })
+    );
   }
 
   async function toggleWorkout() {
@@ -168,7 +215,8 @@ export default function Page() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ date: today, focus: digest?.workout?.focus }),
       },
-      "Couldn't update workout"
+      "Couldn't update workout",
+      (d) => ({ ...d, fitness: { ...d.fitness, todayDone: !d.fitness?.todayDone } })
     );
   }
 
@@ -180,7 +228,8 @@ export default function Page() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ date: today, focus: digest?.businessFocus?.focus }),
       },
-      "Couldn't update business focus"
+      "Couldn't update business focus",
+      (d) => ({ ...d, businessFocus: { ...d.businessFocus, done: !d.businessFocus?.done } })
     );
   }
 
@@ -192,13 +241,21 @@ export default function Page() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),
       },
-      "Couldn't update Fiverr status"
+      "Couldn't update Fiverr status",
+      (d) => ({
+        ...d,
+        fiverrPriority: d.fiverrPriority ? { ...d.fiverrPriority, status } : d.fiverrPriority,
+      })
     );
   }
 
   // derived
   const tasks = digest?.tasks || [];
   const workoutHasSession = (digest?.workout?.exercises?.length || 0) > 0;
+  const s = insights?.shopify?.summary;
+  const fin = insights?.finances;
+  const newProducts = insights?.newsletterExtras?.newProducts || [];
+  const trackedPerf = insights?.newsletterExtras?.trackedPerformance || null;
 
   const focusLine = useMemo(() => {
     if (!digest) return "Pulling today together...";
@@ -208,14 +265,16 @@ export default function Page() {
     const dueToday = (digest.fiverrActive || []).find((c) => c.deadline === today);
     if (dueToday) return `${dueToday.client} is due today.${taskSuffix}`;
     if (digest.newsletter?.dueStatus === "overdue") return `Your newsletter's overdue — worth sending soon.${taskSuffix}`;
-    if (digest.inventoryAlerts?.length) return `${digest.inventoryAlerts[0].title} is running low — ${digest.inventoryAlerts[0].totalInventory} left.${taskSuffix}`;
+    if (insights?.inventoryAlerts?.length) {
+      const a = insights.inventoryAlerts[0];
+      return `${a.title} is running low — ${a.totalInventory} left.${taskSuffix}`;
+    }
     if (suggestions?.focusToday) return `${suggestions.focusToday}${taskSuffix}`;
-    if (digest.businessFocus?.done && digest.fitness?.todayDone) return `Today's focus and workout are both done.${taskSuffix || " Nothing else on deck."}`;
+    if (digest.businessFocus?.done && digest.fitness?.todayDone) {
+      return `Today's focus and workout are both done.${taskSuffix || " Nothing else on deck."}`;
+    }
     return `Today's focus: ${digest.businessFocus?.focus}.${taskSuffix}`;
-  }, [suggestions, digest, today]);
-
-  const s = digest?.shopify?.summary;
-  const fin = digest?.finances;
+  }, [suggestions, digest, insights, today]);
 
   return (
     <div style={{ maxWidth: 820, margin: "0 auto", padding: "36px 24px 80px 24px" }}>
@@ -273,8 +332,8 @@ export default function Page() {
             onChange={(e) => updateFiverrStatus(digest.fiverrPriority.id, e.target.value)}
             style={{ fontFamily: sans, fontSize: 12, border: `1px solid ${C.greige}`, padding: "6px 8px", backgroundColor: C.warmWhite, marginBottom: 10 }}
           >
-            {FIVERR_STATUSES.map((s2) => (
-              <option key={s2} value={s2}>{s2}</option>
+            {FIVERR_STATUSES.map((st) => (
+              <option key={st} value={st}>{st}</option>
             ))}
           </select>
           {digest.fiverrPriority.nextStep && (
@@ -288,7 +347,7 @@ export default function Page() {
         </Card>
       )}
 
-      {/* AT A GLANCE — everything on one screen */}
+      {/* AT A GLANCE */}
       <SectionTitle>At a Glance</SectionTitle>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
         {s ? (
@@ -303,10 +362,13 @@ export default function Page() {
             trend={s.revenuePrevious7Days > 0 && s.revenueLast7Days >= s.revenuePrevious7Days ? "up" : undefined}
           />
         ) : (
-          <StatTile label="Store, 7 Days" value="—" sub="connect Shopify" />
+          <StatTile label="Store, 7 Days" value={insightsLoading ? "…" : "—"} sub={insightsLoading ? "loading" : "connect Shopify"} />
         )}
         {fin && <StatTile label="Net (all sources)" value={money(fin.net)} sub={`${money(fin.income)} in`} />}
         <StatTile label="Workout Streak" value={`${digest?.fitness?.streak ?? 0}d`} sub={digest?.fitness?.todayDone ? "done today" : "not yet today"} />
+        {digest?.growth?.routinePct != null && (
+          <StatTile label="Routine Today" value={`${digest.growth.routinePct}%`} sub={`${digest.growth.routineDone}/${digest.growth.routineTotal} done`} />
+        )}
         {digest?.velvet?.latest?.totalUsers != null && (
           <StatTile label="Velvet Users" value={digest.velvet.latest.totalUsers.toLocaleString()} />
         )}
@@ -322,8 +384,10 @@ export default function Page() {
               <p style={{ fontFamily: serif, fontSize: 19, margin: "8px 0 6px 0" }}>Done for today ✓</p>
               <p style={{ fontFamily: sans, fontSize: 13, margin: "0 0 12px 0", lineHeight: 1.5, opacity: 0.75 }}>
                 {digest?.fiverrPriority
-                  ? `Next up: ${digest.fiverrPriority.client} needs ${digest.fiverrPriority.status.toLowerCase()}.`
-                  : suggestions?.focusToday || "Nothing else flagged — check Tasks below."}
+                  ? `Next up: ${digest.fiverrPriority.client} — ${digest.fiverrPriority.status.toLowerCase()}.`
+                  : tasks.length > 0
+                  ? `Next up: ${tasks[0].text}`
+                  : suggestions?.focusToday || "Nothing else flagged."}
               </p>
             </>
           ) : (
@@ -356,7 +420,47 @@ export default function Page() {
         </Card>
       </div>
 
-      {/* AI SUGGESTIONS — the proactive core */}
+      {/* NEWSLETTER — always shows something real, even without AI suggestions */}
+      <SectionTitle>Newsletter</SectionTitle>
+      <Card style={{ borderColor: digest?.newsletter?.dueStatus === "overdue" ? C.oxblood : C.greige }}>
+        <p style={{ fontFamily: serif, fontSize: 17, margin: "0 0 8px 0" }}>
+          {digest?.newsletter?.dueStatus === "overdue"
+            ? "Due — worth sending one"
+            : digest?.newsletter?.dueStatus === "due-soon"
+            ? "Coming up soon"
+            : digest?.newsletter?.lastSent
+            ? "Recently sent — nothing due yet"
+            : "No sends logged yet"}
+          {digest?.newsletter?.daysSince != null ? ` · ${digest.newsletter.daysSince}d ago` : ""}
+        </p>
+        {digest?.newsletter?.tracked && (
+          <p style={{ fontFamily: sans, fontSize: 13, margin: "0 0 8px 0", opacity: 0.85, lineHeight: 1.5 }}>
+            Tracking: <strong>{digest.newsletter.tracked.title || "latest campaign"}</strong>
+            {trackedPerf
+              ? ` — ${trackedPerf.orders} order${trackedPerf.orders === 1 ? "" : "s"} attributed (${money(trackedPerf.revenue)})`
+              : insightsLoading
+              ? " — checking performance…"
+              : " — no attributed orders yet"}
+          </p>
+        )}
+        {newProducts.length > 0 && (
+          <p style={{ fontFamily: sans, fontSize: 13, margin: "0 0 8px 0", lineHeight: 1.5 }}>
+            <strong>{newProducts.length}</strong> new product{newProducts.length === 1 ? "" : "s"} since your last send: {newProducts.join(", ")}
+          </p>
+        )}
+        {suggestions?.newsletter?.themes?.length > 0 && (
+          <div style={{ marginTop: 6 }}>
+            <p style={{ fontFamily: sans, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: C.oxblood, margin: "0 0 4px 0" }}>Content ideas</p>
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {suggestions.newsletter.themes.map((t, i) => (
+                <li key={i} style={{ fontFamily: sans, fontSize: 13, lineHeight: 1.6 }}>{t}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </Card>
+
+      {/* AI SUGGESTIONS */}
       <SectionTitle
         right={
           <button
@@ -376,14 +480,13 @@ export default function Page() {
           <p style={{ fontFamily: sans, fontSize: 13, opacity: 0.7, margin: 0, lineHeight: 1.6 }}>
             {suggestLoading
               ? "Analyzing your sales, catalog, Fiverr orders, and latest trends..."
-              : "Tap refresh to have your assistant analyze your real data and suggest products, posts, Fiverr moves, and newsletter timing. (Needs the Anthropic key connected.)"}
+              : "Tap refresh to have your assistant analyze your real data and suggest products, posts, Fiverr moves, and newsletter timing."}
           </p>
         </Card>
       )}
 
       {suggestions && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {/* Products */}
           {suggestions.products?.length > 0 && (
             <Card>
               <EyebrowLabel>Products To Consider</EyebrowLabel>
@@ -401,7 +504,6 @@ export default function Page() {
             </Card>
           )}
 
-          {/* Fiverr */}
           {suggestions.fiverr?.length > 0 && (
             <Card>
               <EyebrowLabel>Fiverr</EyebrowLabel>
@@ -416,7 +518,6 @@ export default function Page() {
             </Card>
           )}
 
-          {/* Social */}
           {suggestions.social?.length > 0 && (
             <Card>
               <EyebrowLabel>Post Ideas</EyebrowLabel>
@@ -434,42 +535,6 @@ export default function Page() {
             </Card>
           )}
 
-          {/* Newsletter */}
-          {suggestions.newsletter && (
-            <Card style={{ borderColor: suggestions.newsletter.shouldSend ? C.oxblood : C.greige }}>
-              <EyebrowLabel>Newsletter</EyebrowLabel>
-              <p style={{ fontFamily: serif, fontSize: 16, margin: "8px 0 6px 0" }}>
-                {suggestions.newsletter.shouldSend ? "Worth sending one soon" : "No rush right now"}
-                {digest?.newsletter?.lastSent ? ` · last sent ${digest.newsletter.daysSince}d ago` : ""}
-              </p>
-              {digest?.newsletter?.tracked && (
-                <p style={{ fontFamily: sans, fontSize: 13, margin: "0 0 6px 0", opacity: 0.85 }}>
-                  Tracking: <strong>{digest.newsletter.tracked.title}</strong>
-                  {digest.newsletter.tracked.performance
-                    ? ` — ${digest.newsletter.tracked.performance.orders} order${digest.newsletter.tracked.performance.orders === 1 ? "" : "s"} attributed so far (${money(digest.newsletter.tracked.performance.revenue)})`
-                    : " — performance data unavailable right now"}
-                </p>
-              )}
-              <p style={{ fontFamily: sans, fontSize: 13, margin: "0 0 10px 0", opacity: 0.8, lineHeight: 1.5 }}>{suggestions.newsletter.why}</p>
-              {digest?.newsletter?.newProducts?.length > 0 && (
-                <p style={{ fontFamily: sans, fontSize: 13, margin: "0 0 10px 0", lineHeight: 1.5 }}>
-                  <strong>{digest.newsletter.newProducts.length}</strong> new product{digest.newsletter.newProducts.length === 1 ? "" : "s"} since your last send: {digest.newsletter.newProducts.join(", ")}
-                </p>
-              )}
-              {suggestions.newsletter.themes?.length > 0 && (
-                <div>
-                  <p style={{ fontFamily: sans, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: C.oxblood, margin: "0 0 4px 0" }}>Content ideas</p>
-                  <ul style={{ margin: 0, paddingLeft: 18 }}>
-                    {suggestions.newsletter.themes.map((t, i) => (
-                      <li key={i} style={{ fontFamily: sans, fontSize: 13, lineHeight: 1.6 }}>{t}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </Card>
-          )}
-
-          {/* Growth */}
           {suggestions.growth?.length > 0 && (
             <Card>
               <EyebrowLabel>Grow Your Skills</EyebrowLabel>

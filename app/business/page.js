@@ -42,7 +42,10 @@ export default function BusinessPage() {
   const [newItemText, setNewItemText] = useState({});
 
   useEffect(() => {
-    fetch("/api/shopify", { cache: "no-store" }).then((r) => r.json()).then(setShopify);
+    fetch("/api/insights", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setShopify({ summary: d?.shopify?.summary || null, inventoryAlerts: d?.inventoryAlerts || [], abandonedCheckouts: d?.abandonedCheckouts || null }))
+      .catch(() => {});
     fetch("/api/campaigns", { cache: "no-store" }).then((r) => r.json()).then((d) => setCampaigns(d.campaigns || []));
     fetch("/api/research", { cache: "no-store" }).then((r) => r.json()).then((d) => setDigests(d.digests || []));
     fetch("/api/ideas", { cache: "no-store" }).then((r) => r.json()).then((d) => setIdeas(d.ideas || []));
@@ -223,6 +226,14 @@ export default function BusinessPage() {
               </div>
             ))}
           </div>
+        </Card>
+      )}
+      {shopify?.abandonedCheckouts?.count > 0 && (
+        <Card style={{ marginBottom: 24 }}>
+          <EyebrowLabel>Abandoned Checkouts, Last 14 Days</EyebrowLabel>
+          <p style={{ fontFamily: sans, fontSize: 13, margin: "10px 0 0 0", lineHeight: 1.5 }}>
+            {shopify.abandonedCheckouts.count} cart{shopify.abandonedCheckouts.count === 1 ? "" : "s"} left behind, worth {money(shopify.abandonedCheckouts.value)}.
+          </p>
         </Card>
       )}
       {!shopify?.summary && (
